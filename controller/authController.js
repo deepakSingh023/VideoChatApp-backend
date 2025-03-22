@@ -1,10 +1,10 @@
-const User = require('../models/User.js');
-const bcrypt = require('bcryptjs');
+const User = require('../model/user.js');
+const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 
-
-const register = async (req, res) => => {
+const register = async (req, res) => {
     try {
       const { username, email, password } = req.body;
       
@@ -88,3 +88,8 @@ const register = async (req, res) => => {
     }
   };
   
+
+  module.exports = {
+    register,
+    login,
+  };
