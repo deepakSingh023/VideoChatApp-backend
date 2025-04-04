@@ -9,9 +9,8 @@ const dotenv = require('dotenv');
 const { v4: uuidv4 } = require('uuid');
 const User = require('./model/user'); 
 const authRoutes = require('./routes/authRoutes');
-const SocketHandlers = require('./socket/socketHandler');
 const userRoutes = require('./routes/userRoutes');
-
+const { socketHandlers } = require('./controller/userController');
 // Load environment variables
 dotenv.config();
 
@@ -29,7 +28,7 @@ const io = socketIo(server, {
 
 app.use(express.json());
 app.use('/api/auth', authRoutes);
-app.use('/api/user', userRoutes);
+app.use('/api/meet', userRoutes);
 
 // MongoDB connection
 mongoose.connect(process.env.MONGODB_URI, {
@@ -47,5 +46,5 @@ server.listen(PORT, () => {
 
 // Initialize socket handlers
 io.on('connection', (socket) => {
-  SocketHandlers(socket, io);
+  socketHandlers(socket, io);
 });

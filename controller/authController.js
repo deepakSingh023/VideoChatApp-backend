@@ -6,10 +6,10 @@ const { v4: uuidv4 } = require('uuid');
 
 const register = async (req, res) => {
     try {
-      const { username, email, password } = req.body;
+      const { username, password } = req.body;
       
       // Check if user already exists
-      let user = await User.findOne({ $or: [{ email }, { username }] });
+      let user = await User.findOne({username});
       if (user) {
         return res.status(400).json({ message: 'User already exists' });
       }
@@ -21,7 +21,6 @@ const register = async (req, res) => {
       // Create new user
       user = new User({
         username,
-        email,
         password: hashedPassword,
         videoCallId: uuidv4() // Generate unique video call ID
       });
@@ -40,7 +39,6 @@ const register = async (req, res) => {
         user: {
           id: user._id,
           username: user.username,
-          email: user.email,
           videoCallId: user.videoCallId
         }
       });
@@ -78,7 +76,6 @@ const register = async (req, res) => {
         user: {
           id: user._id,
           username: user.username,
-          email: user.email,
           videoCallId: user.videoCallId
         }
       });
