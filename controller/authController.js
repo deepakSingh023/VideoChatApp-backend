@@ -48,29 +48,29 @@ const register = async (req, res) => {
     }
   }
 
- const login = async (req, res) => {
+  const login = async (req, res) => {
     try {
-      const { email, password } = req.body;
-      
-      // Check if user exists
-      const user = await User.findOne({ email });
+      const { username, password } = req.body;
+  
+      const user = await User.findOne({ username });
       if (!user) {
         return res.status(400).json({ message: 'Invalid credentials' });
       }
-      
-      // Validate password
+  
       const isMatch = await bcrypt.compare(password, user.password);
       if (!isMatch) {
         return res.status(400).json({ message: 'Invalid credentials' });
       }
-      
-      // Generate JWT token
+  
+      const secret = process.env.JWT_SECRET;
+      if (!secret) throw new Error('Missing JWT_SECRET in environment');
+  
       const token = jwt.sign(
         { id: user._id, username: user.username },
-        process.env.JWT_SECRET || 'jwtsecretkey',
+        secret,
         { expiresIn: '24h' }
       );
-      
+  
       res.json({
         token,
         user: {
@@ -84,6 +84,7 @@ const register = async (req, res) => {
       res.status(500).json({ message: 'Server error' });
     }
   };
+  
   
 
   module.exports = {

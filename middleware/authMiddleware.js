@@ -1,32 +1,27 @@
 const jwt = require('jsonwebtoken');
-require('dotenv').config(); 
+require('dotenv').config();
 
 const auth = (req, res, next) => {
-  let token;
+  const authHeader = req.headers.authorization;
 
-  // Check for authorization header and if it starts with 'Bearer'
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    token = req.headers.authorization.split(' ')[1]; // Extract the token after 'Bearer'
+  // Check if Authorization header exists and starts with "Bearer"
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, message: 'Not authorized, token missing' });
   }
 
-  
-  if (!token) {
-    return res.status(401).json({ message: 'Not authorized, no token' });
-  }
+  const token = authHeader.split(' ')[1];
 
   try {
-    
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    
+    // You can store more data if your token includes it (like username/email)
     req.user = { id: decoded.id };
 
-  
     next();
   } catch (error) {
-    console.error('Token verification error:', error);
-    return res.status(401).json({ message: 'Not authorized, token failed' });
+    console.error('Token verification error:', error.message);
+    return res.status(401).json({ success: false, message: 'Token invalid or expired' });
   }
 };
 
-  module.exports={auth};
+module.exports = { auth };
