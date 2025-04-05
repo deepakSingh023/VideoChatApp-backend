@@ -127,6 +127,8 @@ async function createMeeting(req, res) {
 
 async function joinMeeting(req, res) {
   const { meetingId } = req.body;
+
+  let token;
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
