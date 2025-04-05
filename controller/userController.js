@@ -72,6 +72,35 @@ function socketHandlers(io) {
           if (otherUserId !== userId) {
             existingUsers.push(otherVideoCallId);
           }
+        }
+    
+        // Add current user to the meeting room
+        currentMeeting.set(userId, videoCallId);
+        socket.join(meetingId);
+    
+        console.log(`User ${userId} (VideoCall ID: ${videoCallId}) joined meeting ${meetingId}`);
+    
+        // Notify all other users in the room about the new participant
+        socket.to(meetingId).emit('user-joined', {
+          userId,
+          videoCallId,
+          meetingId,
+          existingUsers: [], // for existing users, no need to send others
+        });
+    
+        // Let the newly joined user know who is already in the room
+        socket.emit('user-joined', {
+          userId,
+          videoCallId,
+          meetingId,
+          existingUsers,
+        });
+    
+      } catch (err) {
+        console.error('Join meeting error:', err);
+        socket.emit('join-failed', { message: 'Invalid token' });
+      }
+    });
     
 
     // Handle disconnection
