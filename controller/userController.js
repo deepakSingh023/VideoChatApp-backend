@@ -128,18 +128,19 @@ async function createMeeting(req, res) {
 async function joinMeeting(req, res) {
   const { meetingId } = req.body;
 
-  let token;
+  let token; 
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    const token = authHeader.split(' ')[1];
+    token = authHeader.split(' ')[1]; 
   } catch (error) { 
     console.error('Error joining meeting:', error);
     return res.status(500).json({ success: false, message: 'Server error' });
   }
+
   if (!meetings.has(meetingId)) {
     return res.status(400).json({ success: false, message: 'Invalid meeting ID' });
   }
@@ -148,9 +149,8 @@ async function joinMeeting(req, res) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const userId = decoded.id;
 
-    // Fetch user's videoCallId
     const user = await User.findById(userId);
-    const videoCallId = user.videoCallId || uuidv4(); // Assign if not present
+    const videoCallId = user.videoCallId;
 
     meetings.get(meetingId).set(userId, videoCallId);
 
@@ -160,5 +160,6 @@ async function joinMeeting(req, res) {
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 }
+
 
 module.exports = { socketHandlers, createMeeting, joinMeeting };
