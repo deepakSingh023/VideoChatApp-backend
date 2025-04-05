@@ -7,10 +7,11 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { v4: uuidv4 } = require('uuid');
-const User = require('./model/user'); 
+const User = require('./model/user');
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const { socketHandlers } = require('./controller/userController');
+
 // Load environment variables
 dotenv.config();
 
@@ -18,19 +19,24 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors());
-const io = socketIo(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
+// Configure CORS with explicit options
+const corsOptions = {
+  origin: '*', // allow requests from any origin
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
+// Ensure preflight OPTIONS requests are handled
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
+
+// Register your routes
 app.use('/api/auth', authRoutes);
 app.use('/api/meet', userRoutes);
 
-// MongoDB connection
+// Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
@@ -45,6 +51,13 @@ server.listen(PORT, () => {
 });
 
 // Initialize socket handlers
+const io = socketIo(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+
 io.on('connection', (socket) => {
   socketHandlers(socket, io);
 });
