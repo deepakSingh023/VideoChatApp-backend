@@ -126,7 +126,18 @@ async function createMeeting(req, res) {
 }
 
 async function joinMeeting(req, res) {
-  const { meetingId, token } = req.body;
+  const { meetingId } = req.body;
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const token = authHeader.split(' ')[1];
+  } catch (error) { 
+    console.error('Error joining meeting:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
   if (!meetings.has(meetingId)) {
     return res.status(400).json({ success: false, message: 'Invalid meeting ID' });
   }
