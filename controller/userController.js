@@ -49,26 +49,30 @@ function socketHandlers(io) {
       if (!meetings.has(meetingId)) {
         return socket.emit('join-failed', { message: 'Meeting does not exist' });
       }
-
+    
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const userId = decoded.id;
-
+    
         // Fetch user's unique videoCallId
         const user = await User.findById(userId);
         const videoCallId = user.videoCallId || uuidv4(); // Assign if not present
-
-        // Add user to meeting bucket
-        meetings.get(meetingId).set(userId, videoCallId);
-        socket.join(meetingId);
-
-        console.log(`User ${userId} (VideoCall ID: ${videoCallId}) joined meeting ${meetingId}`);
-        io.to(meetingId).emit('user-joined', { userId, videoCallId, meetingId });
-      } catch (err) {
-        console.error('Join meeting error:', err);
-        socket.emit('join-failed', { message: 'Invalid token' });
-      }
-    });
+    
+        // Save the videoCallId if it was generated now
+        if (!user.videoCallId) {
+          user.videoCallId = videoCallId;
+          await user.save();
+        }
+    
+        const currentMeeting = meetings.get(meetingId);
+    
+        // Collect existing videoCallIds (excluding the joining user)
+        const existingUsers = [];
+        for (const [otherUserId, otherVideoCallId] of currentMeeting.entries()) {
+          if (otherUserId !== userId) {
+            existingUsers.push(otherVideoCallId);
+          }
+    
 
     // Handle disconnection
     socket.on('disconnect', async () => {
