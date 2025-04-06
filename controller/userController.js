@@ -6,6 +6,7 @@ const User = require('../model/user');
 const activeUsers = new Map();        // userId -> socketId
 const socketToUser = new Map();       // socketId -> userId
 const meetings = new Map();           // meetingId -> Map(userId -> videoCallId)
+const videoCallIdToUserId = new Map(); // videoCallId -> userId (for quick lookup)
 
 function socketHandlers(io) {
   io.on('connection', (socket) => {
@@ -27,6 +28,7 @@ function socketHandlers(io) {
         // Save associations
         activeUsers.set(userId, socket.id);
         socketToUser.set(socket.id, userId);
+        videoCallIdToUserId.set(user.videoCallId, userId);
 
         await User.findByIdAndUpdate(userId, { isOnline: true, lastSeen: new Date() });
 
@@ -49,7 +51,8 @@ function socketHandlers(io) {
     // Join meeting
     socket.on('join-meeting', async ({ meetingId, token }) => {
       if (!meetings.has(meetingId)) {
-        return socket.emit('join-failed', { message: 'Meeting does not exist' });
+        meetings.set(meetingId, new Map()); // Create meeting if it doesn't exist
+        console.log(`Meeting ${meetingId} created on join`);
       }
 
       try {
@@ -62,17 +65,24 @@ function socketHandlers(io) {
           await user.save();
         }
 
+        // Update mapping
+        videoCallIdToUserId.set(user.videoCallId, userId);
+
         const currentMeeting = meetings.get(meetingId);
 
         // Prevent duplicate join
         if (currentMeeting.has(userId)) {
+          console.log(`User ${userId} already in meeting ${meetingId}`);
           return socket.emit('join-failed', { message: 'User already in meeting' });
         }
 
+        console.log(`Current meeting participants: ${JSON.stringify([...currentMeeting.keys()])}`);
+        
         const existingUsers = [];
         for (const [otherUserId, otherVideoCallId] of currentMeeting.entries()) {
           if (otherUserId !== userId) {
             existingUsers.push(otherVideoCallId);
+            console.log(`Adding existing user ${otherUserId} with videoCallId ${otherVideoCallId}`);
           }
         }
 
@@ -81,20 +91,28 @@ function socketHandlers(io) {
         socket.join(meetingId);
 
         console.log(`User ${userId} joined meeting ${meetingId} as ${user.videoCallId}`);
+        console.log(`Existing users for ${userId}: ${JSON.stringify(existingUsers)}`);
 
         // Notify others (not including self)
         socket.to(meetingId).emit('user-joined', {
-          userId,
+          userId: userId.toString(),
           videoCallId: user.videoCallId,
           meetingId,
         });
 
         // Notify self about existing users
         socket.emit('user-joined', {
-          userId,
+          userId: userId.toString(),
           videoCallId: user.videoCallId,
           meetingId,
           existingUsers,
+          totalParticipants: currentMeeting.size
+        });
+
+        // Broadcast updated participant count to all in the meeting
+        io.to(meetingId).emit('participants-update', {
+          count: currentMeeting.size,
+          users: Array.from(currentMeeting.values()) // Send all videoCallIds
         });
 
       } catch (err) {
@@ -116,6 +134,12 @@ function socketHandlers(io) {
         socket.leave(meetingId);
         io.to(meetingId).emit('user-left', { userId, videoCallId });
 
+        // Broadcast updated participant count
+        io.to(meetingId).emit('participants-update', {
+          count: participants.size,
+          users: Array.from(participants.values())
+        });
+
         if (participants.size === 0) {
           meetings.delete(meetingId);
           console.log(`Meeting ${meetingId} ended (empty)`);
@@ -123,32 +147,54 @@ function socketHandlers(io) {
       }
     });
 
-    // Handle WebRTC signaling - add these handlers
+    // Debug endpoint to get meeting info
+    socket.on('get-meeting-info', ({ meetingId }) => {
+      if (!meetings.has(meetingId)) {
+        return socket.emit('meeting-info', { exists: false });
+      }
+      
+      const participants = meetings.get(meetingId);
+      const users = [];
+      
+      for (const [userId, videoCallId] of participants.entries()) {
+        users.push({ userId, videoCallId });
+      }
+      
+      socket.emit('meeting-info', {
+        exists: true,
+        meetingId,
+        participantCount: participants.size,
+        users
+      });
+    });
+
+    // Handle WebRTC signaling
     socket.on('offer', async ({ target, offer }) => {
       console.log(`Relaying offer to ${target}`);
       
       // Find the socket ID for the target user
-      const targetUserId = await findUserIdByVideoCallId(target);
-      if (!targetUserId) return;
+      const targetUserId = videoCallIdToUserId.get(target);
+      if (!targetUserId) {
+        console.error(`Could not find userId for videoCallId ${target}`);
+        return;
+      }
       
       const targetSocketId = activeUsers.get(targetUserId);
-      if (!targetSocketId) return;
+      if (!targetSocketId) {
+        console.error(`Could not find socketId for userId ${targetUserId}`);
+        return;
+      }
       
       // Get the sender's videoCallId
       const senderId = socketToUser.get(socket.id);
-      if (!senderId) return;
-      
-      // Find which meeting they're both in
-      let inSameMeeting = false;
-      meetings.forEach((participants) => {
-        if (participants.has(senderId) && participants.has(targetUserId)) {
-          inSameMeeting = true;
-        }
-      });
-      
-      if (!inSameMeeting) return;
+      if (!senderId) {
+        console.error(`Could not find userId for socket ${socket.id}`);
+        return;
+      }
       
       const senderVideoCallId = await getVideoCallIdByUserId(senderId);
+      
+      console.log(`Sending offer from ${senderVideoCallId} to ${target}`);
       
       // Relay the offer to the target
       io.to(targetSocketId).emit('offer', {
@@ -161,17 +207,28 @@ function socketHandlers(io) {
       console.log(`Relaying answer to ${target}`);
       
       // Find the socket ID for the target user
-      const targetUserId = await findUserIdByVideoCallId(target);
-      if (!targetUserId) return;
+      const targetUserId = videoCallIdToUserId.get(target);
+      if (!targetUserId) {
+        console.error(`Could not find userId for videoCallId ${target}`);
+        return;
+      }
       
       const targetSocketId = activeUsers.get(targetUserId);
-      if (!targetSocketId) return;
+      if (!targetSocketId) {
+        console.error(`Could not find socketId for userId ${targetUserId}`);
+        return;
+      }
       
       // Get the sender's videoCallId
       const senderId = socketToUser.get(socket.id);
-      if (!senderId) return;
+      if (!senderId) {
+        console.error(`Could not find userId for socket ${socket.id}`);
+        return;
+      }
       
       const senderVideoCallId = await getVideoCallIdByUserId(senderId);
+      
+      console.log(`Sending answer from ${senderVideoCallId} to ${target}`);
       
       // Relay the answer to the target
       io.to(targetSocketId).emit('answer', {
@@ -184,15 +241,24 @@ function socketHandlers(io) {
       console.log(`Relaying ICE candidate to ${target}`);
       
       // Find the socket ID for the target user
-      const targetUserId = await findUserIdByVideoCallId(target);
-      if (!targetUserId) return;
+      const targetUserId = videoCallIdToUserId.get(target);
+      if (!targetUserId) {
+        console.error(`Could not find userId for videoCallId ${target}`);
+        return;
+      }
       
       const targetSocketId = activeUsers.get(targetUserId);
-      if (!targetSocketId) return;
+      if (!targetSocketId) {
+        console.error(`Could not find socketId for userId ${targetUserId}`);
+        return;
+      }
       
       // Get the sender's videoCallId
       const senderId = socketToUser.get(socket.id);
-      if (!senderId) return;
+      if (!senderId) {
+        console.error(`Could not find userId for socket ${socket.id}`);
+        return;
+      }
       
       const senderVideoCallId = await getVideoCallIdByUserId(senderId);
       
@@ -209,6 +275,12 @@ function socketHandlers(io) {
       const userId = socketToUser.get(socket.id);
       if (!userId) return;
 
+      // Clean up user's videoCallId mapping
+      const user = await User.findById(userId);
+      if (user && user.videoCallId) {
+        videoCallIdToUserId.delete(user.videoCallId);
+      }
+
       activeUsers.delete(userId);
       socketToUser.delete(socket.id);
 
@@ -219,6 +291,12 @@ function socketHandlers(io) {
           const videoCallId = participants.get(userId);
           participants.delete(userId);
           io.to(meetingId).emit('user-left', { userId, videoCallId });
+
+          // Broadcast updated participant count
+          io.to(meetingId).emit('participants-update', {
+            count: participants.size,
+            users: Array.from(participants.values())
+          });
 
           if (participants.size === 0) {
             meetings.delete(meetingId);
@@ -231,11 +309,6 @@ function socketHandlers(io) {
 }
 
 // Helper functions for WebRTC signaling
-async function findUserIdByVideoCallId(videoCallId) {
-  const user = await User.findOne({ videoCallId });
-  return user ? user._id.toString() : null;
-}
-
 async function getVideoCallIdByUserId(userId) {
   const user = await User.findById(userId);
   return user ? user.videoCallId : null;
@@ -265,7 +338,9 @@ async function joinMeeting(req, res) {
   const token = authHeader.split(' ')[1];
 
   if (!meetings.has(meetingId)) {
-    return res.status(400).json({ success: false, message: 'Meeting not found' });
+    // Create the meeting if it doesn't exist
+    meetings.set(meetingId, new Map());
+    console.log(`Meeting ${meetingId} created during HTTP join`);
   }
 
   try {
@@ -277,6 +352,9 @@ async function joinMeeting(req, res) {
       user.videoCallId = uuidv4();
       await user.save();
     }
+
+    // Update mapping
+    videoCallIdToUserId.set(user.videoCallId, userId);
 
     const participants = meetings.get(meetingId);
     if (!participants.has(userId)) {
