@@ -123,6 +123,86 @@ function socketHandlers(io) {
       }
     });
 
+    // Handle WebRTC signaling - add these handlers
+    socket.on('offer', async ({ target, offer }) => {
+      console.log(`Relaying offer to ${target}`);
+      
+      // Find the socket ID for the target user
+      const targetUserId = await findUserIdByVideoCallId(target);
+      if (!targetUserId) return;
+      
+      const targetSocketId = activeUsers.get(targetUserId);
+      if (!targetSocketId) return;
+      
+      // Get the sender's videoCallId
+      const senderId = socketToUser.get(socket.id);
+      if (!senderId) return;
+      
+      // Find which meeting they're both in
+      let inSameMeeting = false;
+      meetings.forEach((participants) => {
+        if (participants.has(senderId) && participants.has(targetUserId)) {
+          inSameMeeting = true;
+        }
+      });
+      
+      if (!inSameMeeting) return;
+      
+      const senderVideoCallId = await getVideoCallIdByUserId(senderId);
+      
+      // Relay the offer to the target
+      io.to(targetSocketId).emit('offer', {
+        sender: senderVideoCallId,
+        offer
+      });
+    });
+
+    socket.on('answer', async ({ target, answer }) => {
+      console.log(`Relaying answer to ${target}`);
+      
+      // Find the socket ID for the target user
+      const targetUserId = await findUserIdByVideoCallId(target);
+      if (!targetUserId) return;
+      
+      const targetSocketId = activeUsers.get(targetUserId);
+      if (!targetSocketId) return;
+      
+      // Get the sender's videoCallId
+      const senderId = socketToUser.get(socket.id);
+      if (!senderId) return;
+      
+      const senderVideoCallId = await getVideoCallIdByUserId(senderId);
+      
+      // Relay the answer to the target
+      io.to(targetSocketId).emit('answer', {
+        sender: senderVideoCallId,
+        answer
+      });
+    });
+
+    socket.on('ice-candidate', async ({ target, candidate }) => {
+      console.log(`Relaying ICE candidate to ${target}`);
+      
+      // Find the socket ID for the target user
+      const targetUserId = await findUserIdByVideoCallId(target);
+      if (!targetUserId) return;
+      
+      const targetSocketId = activeUsers.get(targetUserId);
+      if (!targetSocketId) return;
+      
+      // Get the sender's videoCallId
+      const senderId = socketToUser.get(socket.id);
+      if (!senderId) return;
+      
+      const senderVideoCallId = await getVideoCallIdByUserId(senderId);
+      
+      // Relay the ICE candidate to the target
+      io.to(targetSocketId).emit('ice-candidate', {
+        sender: senderVideoCallId,
+        candidate
+      });
+    });
+
     // On socket disconnect
     socket.on('disconnect', async () => {
       console.log('Client disconnected:', socket.id);
@@ -148,6 +228,17 @@ function socketHandlers(io) {
       });
     });
   });
+}
+
+// Helper functions for WebRTC signaling
+async function findUserIdByVideoCallId(videoCallId) {
+  const user = await User.findOne({ videoCallId });
+  return user ? user._id.toString() : null;
+}
+
+async function getVideoCallIdByUserId(userId) {
+  const user = await User.findById(userId);
+  return user ? user.videoCallId : null;
 }
 
 // ---------- HTTP Controllers ----------
