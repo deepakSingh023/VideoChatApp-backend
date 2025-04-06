@@ -2,180 +2,179 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const User = require('../model/user');
 
-// Track active users and their socket IDs
-const activeUsers = new Map(); // userId -> socketId
-const socketToUser = new Map(); // socketId -> userId
-const meetings = new Map(); // meetingId -> Map(userId -> videoCallId)
+// Memory maps to track states
+const activeUsers = new Map();        // userId -> socketId
+const socketToUser = new Map();       // socketId -> userId
+const meetings = new Map();           // meetingId -> Map(userId -> videoCallId)
 
 function socketHandlers(io) {
   io.on('connection', (socket) => {
-    console.log('New client connected', socket.id);
-    
-    // User authentication via socket
+    console.log('New client connected:', socket.id);
+
+    // Authenticate user via socket
     socket.on('authenticate', async ({ token }) => {
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const userId = decoded.id;
-        
-        // Fetch user's unique videoCallId
-        const user = await User.findById(userId);
-        const videoCallId = user.videoCallId || uuidv4(); // Assign if not present
+        let user = await User.findById(userId);
 
-        // Associate socket with user
+        // Assign videoCallId if not already set
+        if (!user.videoCallId) {
+          user.videoCallId = uuidv4();
+          await user.save();
+        }
+
+        // Save associations
         activeUsers.set(userId, socket.id);
         socketToUser.set(socket.id, userId);
-        
-        // Update user's online status
+
         await User.findByIdAndUpdate(userId, { isOnline: true, lastSeen: new Date() });
-        
+
         console.log(`User ${userId} authenticated with socket ${socket.id}`);
-        socket.emit('authenticated', { success: true, videoCallId });
+        socket.emit('authenticated', { success: true, videoCallId: user.videoCallId });
       } catch (err) {
-        console.error('Authentication error:', err);
+        console.error('Authentication failed:', err.message);
         socket.emit('authenticated', { success: false, message: 'Invalid token' });
       }
     });
 
-    // Create a new meeting
-    socket.on('create-meeting', async () => {
+    // Create new meeting
+    socket.on('create-meeting', () => {
       const meetingId = uuidv4();
-      meetings.set(meetingId, new Map()); // Initialize meeting with empty user map
+      meetings.set(meetingId, new Map());
       console.log(`Meeting ${meetingId} created`);
       socket.emit('meeting-created', { meetingId });
     });
 
-    // Join a meeting
+    // Join meeting
     socket.on('join-meeting', async ({ meetingId, token }) => {
       if (!meetings.has(meetingId)) {
         return socket.emit('join-failed', { message: 'Meeting does not exist' });
       }
-    
+
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const userId = decoded.id;
-    
-        // Fetch user's unique videoCallId
-        const user = await User.findById(userId);
-        const videoCallId = user.videoCallId || uuidv4(); // Assign if not present
-    
-        // Save the videoCallId if it was generated now
+        let user = await User.findById(userId);
+
         if (!user.videoCallId) {
-          user.videoCallId = videoCallId;
+          user.videoCallId = uuidv4();
           await user.save();
         }
-    
+
         const currentMeeting = meetings.get(meetingId);
-    
-        // Collect existing videoCallIds (excluding the joining user)
+
+        // Prevent duplicate join
+        if (currentMeeting.has(userId)) {
+          return socket.emit('join-failed', { message: 'User already in meeting' });
+        }
+
         const existingUsers = [];
         for (const [otherUserId, otherVideoCallId] of currentMeeting.entries()) {
           if (otherUserId !== userId) {
             existingUsers.push(otherVideoCallId);
           }
         }
-    
-        // Add current user to the meeting room
-        currentMeeting.set(userId, videoCallId);
+
+        // Add user to meeting
+        currentMeeting.set(userId, user.videoCallId);
         socket.join(meetingId);
-    
-        console.log(`User ${userId} (VideoCall ID: ${videoCallId}) joined meeting ${meetingId}`);
-    
-        // Notify all other users in the room about the new participant
+
+        console.log(`User ${userId} joined meeting ${meetingId} as ${user.videoCallId}`);
+
+        // Notify others (not including self)
         socket.to(meetingId).emit('user-joined', {
           userId,
-          videoCallId,
+          videoCallId: user.videoCallId,
           meetingId,
-          existingUsers: [], // for existing users, no need to send others
         });
-    
-        // Let the newly joined user know who is already in the room
+
+        // Notify self about existing users
         socket.emit('user-joined', {
           userId,
-          videoCallId,
+          videoCallId: user.videoCallId,
           meetingId,
           existingUsers,
         });
-    
+
       } catch (err) {
-        console.error('Join meeting error:', err);
+        console.error('Join meeting failed:', err.message);
         socket.emit('join-failed', { message: 'Invalid token' });
       }
     });
-    
 
-    // Handle disconnection
-    socket.on('disconnect', async () => {
-      console.log('Client disconnected', socket.id);
-      
+    // Leave meeting manually
+    socket.on("leave-meeting", ({ meetingId }) => {
       const userId = socketToUser.get(socket.id);
-      if (userId) {
-        activeUsers.delete(userId);
-        socketToUser.delete(socket.id);
-        
-        await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: new Date() });
+      if (!userId || !meetings.has(meetingId)) return;
 
-        meetings.forEach((participants, meetingId) => {
-          if (participants.has(userId)) {
-            participants.delete(userId);
-            io.to(meetingId).emit('user-left', { userId });
+      const participants = meetings.get(meetingId);
+      const videoCallId = participants.get(userId);
 
-            if (participants.size === 0) {
-              meetings.delete(meetingId);
-              console.log(`Meeting ${meetingId} ended automatically.`);
-            }
-          }
-        });
+      if (participants && participants.has(userId)) {
+        participants.delete(userId);
+        socket.leave(meetingId);
+        io.to(meetingId).emit('user-left', { userId, videoCallId });
+
+        if (participants.size === 0) {
+          meetings.delete(meetingId);
+          console.log(`Meeting ${meetingId} ended (empty)`);
+        }
       }
     });
 
-    // Handle leaving a meeting
-    socket.on('leave-meeting', ({ meetingId, userId }) => {
-      if (meetings.has(meetingId)) {
-        const participants = meetings.get(meetingId);
-        participants.delete(userId);
-        
-        io.to(meetingId).emit('user-left', { userId });
-        socket.leave(meetingId);
-        
-        if (participants.size === 0) {
-          meetings.delete(meetingId);
-          console.log(`Meeting ${meetingId} ended automatically.`);
+    // On socket disconnect
+    socket.on('disconnect', async () => {
+      console.log('Client disconnected:', socket.id);
+      const userId = socketToUser.get(socket.id);
+      if (!userId) return;
+
+      activeUsers.delete(userId);
+      socketToUser.delete(socket.id);
+
+      await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: new Date() });
+
+      meetings.forEach((participants, meetingId) => {
+        if (participants.has(userId)) {
+          const videoCallId = participants.get(userId);
+          participants.delete(userId);
+          io.to(meetingId).emit('user-left', { userId, videoCallId });
+
+          if (participants.size === 0) {
+            meetings.delete(meetingId);
+            console.log(`Meeting ${meetingId} ended (empty after disconnect)`);
+          }
         }
-      }
+      });
     });
   });
 }
 
-// Controller to handle HTTP requests for meeting management
+// ---------- HTTP Controllers ----------
+
 async function createMeeting(req, res) {
   try {
     const meetingId = uuidv4();
-    meetings.set(meetingId, new Map()); // Initialize meeting bucket
+    meetings.set(meetingId, new Map());
     return res.json({ success: true, meetingId });
-  } catch (error) {
-    console.error('Error creating meeting:', error);
+  } catch (err) {
+    console.error('Error creating meeting:', err.message);
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 }
 
 async function joinMeeting(req, res) {
   const { meetingId } = req.body;
+  const authHeader = req.headers.authorization;
 
-  let token; 
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
-
-    token = authHeader.split(' ')[1]; 
-  } catch (error) { 
-    console.error('Error joining meeting:', error);
-    return res.status(500).json({ success: false, message: 'Server error' });
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
   }
 
+  const token = authHeader.split(' ')[1];
+
   if (!meetings.has(meetingId)) {
-    return res.status(400).json({ success: false, message: 'Invalid meeting ID' });
+    return res.status(400).json({ success: false, message: 'Meeting not found' });
   }
 
   try {
@@ -183,16 +182,26 @@ async function joinMeeting(req, res) {
     const userId = decoded.id;
 
     const user = await User.findById(userId);
-    const videoCallId = user.videoCallId;
+    if (!user.videoCallId) {
+      user.videoCallId = uuidv4();
+      await user.save();
+    }
 
-    meetings.get(meetingId).set(userId, videoCallId);
+    const participants = meetings.get(meetingId);
+    if (!participants.has(userId)) {
+      participants.set(userId, user.videoCallId);
+    }
 
-    return res.json({ success: true, message: 'Meeting joined', meetingId, videoCallId });
-  } catch (error) {
-    console.error('Error joining meeting:', error);
+    return res.json({
+      success: true,
+      message: 'Meeting joined',
+      meetingId,
+      videoCallId: user.videoCallId,
+    });
+  } catch (err) {
+    console.error('Join meeting error:', err.message);
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 }
-
 
 module.exports = { socketHandlers, createMeeting, joinMeeting };
