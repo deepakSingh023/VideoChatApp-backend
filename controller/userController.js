@@ -2,6 +2,14 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const User = require('../model/user');
 
+
+
+const activeUsers = new Map();
+const socketToUser = new Map();
+const videoCallIdToUserId = new Map();
+const meetings = new Map();
+
+
 function socketHandlers(io) {
   io.on('connection', (socket) => {
     console.log('New client connected:', socket.id);
