@@ -21,28 +21,41 @@ function socketHandlers(io) {
         activeUsers.set(userId, socket.id);
         socketToUser.set(socket.id, userId);
         
+        // Generate or update videoCallId
+        const videoCallId = uuidv4();
         await User.findByIdAndUpdate(userId, { 
           isOnline: true, 
           lastSeen: new Date(),
-          videoCallId: uuidv4() // Generate a new videoCallId on each auth
+          videoCallId
         });
 
         console.log(`User ${userId} authenticated with socket ${socket.id}`);
-        socket.emit('authenticated', { success: true });
+        socket.emit('authenticated', { 
+          success: true,
+          userId,
+          videoCallId
+        });
       } catch (err) {
         console.error('Authentication failed:', err.message);
-        socket.emit('authenticated', { success: false, message: 'Invalid token' });
+        socket.emit('authenticated', { 
+          success: false, 
+          message: 'Invalid token' 
+        });
       }
     });
 
-    // Join a meeting (creates if doesn't exist)
-    socket.on('join-meeting', async ({ meetingId, token }) => {
+    // Join or create a meeting
+    socket.on('join-meeting', async ({ meetingId }) => {
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const userId = decoded.id;
-        
-        if (!socketToUser.has(socket.id)) {
+        const userId = socketToUser.get(socket.id);
+        if (!userId) {
           throw new Error('User not authenticated');
+        }
+
+        // Get user details
+        const user = await User.findById(userId);
+        if (!user) {
+          throw new Error('User not found');
         }
 
         // Get or create meeting
@@ -60,17 +73,12 @@ function socketHandlers(io) {
           console.log(`User ${userId} joined meeting ${meetingId}`);
         }
 
-        // Get user details for signaling
-        const user = await User.findById(userId);
-        
         // Get existing participants (excluding self)
-        const participants = Array.from(meeting)
+        const existingUsers = Array.from(meeting)
           .filter(id => id !== userId)
-          .map(async id => {
-            const participant = await User.findById(id);
-            return participant.videoCallId;
+          .map(id => {
+            return { userId: id };
           });
-        const existingUsers = await Promise.all(participants);
 
         // Notify others about new participant
         socket.to(meetingId).emit('user-joined', {
@@ -88,7 +96,9 @@ function socketHandlers(io) {
 
       } catch (err) {
         console.error('Join meeting error:', err.message);
-        socket.emit('meeting-error', { message: err.message });
+        socket.emit('meeting-error', { 
+          message: err.message 
+        });
       }
     });
 
@@ -113,52 +123,92 @@ function socketHandlers(io) {
       }
     });
 
-    // WebRTC Signaling
+    // WebRTC Signaling - simplified and more reliable
     socket.on('offer', ({ to, offer }) => {
       const targetSocketId = activeUsers.get(to);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('offer', {
-          from: socketToUser.get(socket.id),
-          offer
-        });
+      if (!targetSocketId) {
+        console.error(`Target user ${to} not found`);
+        return;
       }
+      
+      const fromUserId = socketToUser.get(socket.id);
+      if (!fromUserId) {
+        console.error('Sender not authenticated');
+        return;
+      }
+
+      io.to(targetSocketId).emit('offer', {
+        from: fromUserId,
+        offer
+      });
     });
 
     socket.on('answer', ({ to, answer }) => {
       const targetSocketId = activeUsers.get(to);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('answer', {
-          from: socketToUser.get(socket.id),
-          answer
-        });
+      if (!targetSocketId) {
+        console.error(`Target user ${to} not found`);
+        return;
       }
+
+      const fromUserId = socketToUser.get(socket.id);
+      if (!fromUserId) {
+        console.error('Sender not authenticated');
+        return;
+      }
+
+      io.to(targetSocketId).emit('answer', {
+        from: fromUserId,
+        answer
+      });
     });
 
     socket.on('ice-candidate', ({ to, candidate }) => {
       const targetSocketId = activeUsers.get(to);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('ice-candidate', {
-          from: socketToUser.get(socket.id),
-          candidate
-        });
+      if (!targetSocketId) {
+        console.error(`Target user ${to} not found`);
+        return;
       }
+
+      const fromUserId = socketToUser.get(socket.id);
+      if (!fromUserId) {
+        console.error('Sender not authenticated');
+        return;
+      }
+
+      io.to(targetSocketId).emit('ice-candidate', {
+        from: fromUserId,
+        candidate
+      });
     });
 
     // Clean up on disconnect
     socket.on('disconnect', () => {
       const userId = socketToUser.get(socket.id);
-      if (userId) {
-        activeUsers.delete(userId);
-        socketToUser.delete(socket.id);
-        
-        // Mark user as offline
-        User.findByIdAndUpdate(userId, { 
-          isOnline: false,
-          lastSeen: new Date() 
-        }).catch(console.error);
-        
-        console.log(`User ${userId} disconnected`);
-      }
+      if (!userId) return;
+
+      // Leave all meetings this user was in
+      meetings.forEach((meetingUsers, meetingId) => {
+        if (meetingUsers.has(userId)) {
+          meetingUsers.delete(userId);
+          io.to(meetingId).emit('user-left', { userId });
+          
+          if (meetingUsers.size === 0) {
+            meetings.delete(meetingId);
+          }
+        }
+      });
+
+      // Clean up user mappings
+      activeUsers.delete(userId);
+      socketToUser.delete(socket.id);
+      
+      // Mark user as offline
+      User.findByIdAndUpdate(userId, { 
+        isOnline: false,
+        lastSeen: new Date() 
+      }).catch(console.error);
+      
+      console.log(`User ${userId} disconnected`);
     });
   });
 }
