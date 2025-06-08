@@ -9,6 +9,5 @@ const { createMeeting, joinMeeting } = userController;
 const { auth } = require('../middleware/authMiddleware.js');
 
 router.post('/create-meeting', auth, createMeeting);
-router.post('/join-meeting', auth, joinMeeting);
 
 module.exports = router;
